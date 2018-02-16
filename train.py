@@ -18,65 +18,11 @@ import onmt.Models
 import onmt.ModelConstructor
 import onmt.modules
 from onmt.Utils import use_gpu
-import opts
-
-parser = argparse.ArgumentParser(
-    description='train.py',
-    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-# opts.py
-opts.add_md_help_argument(parser)
-opts.model_opts(parser)
-opts.train_opts(parser)
-
-opt = parser.parse_args()
-if opt.word_vec_size != -1:
-    opt.src_word_vec_size = opt.word_vec_size
-    opt.tgt_word_vec_size = opt.word_vec_size
-
-if opt.layers != -1:
-    opt.enc_layers = opt.layers
-    opt.dec_layers = opt.layers
-
-opt.brnn = (opt.encoder_type == "brnn")
-if opt.seed > 0:
-    random.seed(opt.seed)
-    torch.manual_seed(opt.seed)
-
-if opt.rnn_type == "SRU" and not opt.gpuid:
-    raise AssertionError("Using SRU requires -gpuid set.")
-
-if torch.cuda.is_available() and not opt.gpuid:
-    print("WARNING: You have a CUDA device, should run with -gpuid 0")
-
-if opt.gpuid:
-    cuda.set_device(opt.gpuid[0])
-    if opt.seed > 0:
-        torch.cuda.manual_seed(opt.seed)
-
-if len(opt.gpuid) > 1:
-    sys.stderr.write("Sorry, multigpu isn't supported yet, coming soon!\n")
-    sys.exit(1)
-
-# Set up the Crayon logging server.
-if opt.exp_host != "":
-    from pycrayon import CrayonClient
-
-    cc = CrayonClient(hostname=opt.exp_host)
-
-    experiments = cc.get_experiment_names()
-    print(experiments)
-    if opt.exp in experiments:
-        cc.remove_experiment(opt.exp)
-    experiment = cc.create_experiment(opt.exp)
-
-if opt.tensorboard:
-    from tensorboardX import SummaryWriter
-    writer = SummaryWriter(opt.tensorboard_log_dir, comment="Onmt")
+from . import opts
 
 
 def report_func(epoch, batch, num_batches,
-                start_time, lr, report_stats):
+                start_time, lr, report_stats, experiment, writer, opt):
     """
     This is the user-defined batch-level traing progress
     report function.
@@ -204,7 +150,7 @@ def make_loss_compute(model, tgt_vocab, opt):
     return compute
 
 
-def train_model(model, fields, optim, data_type, model_opt):
+def train_model(model, fields, optim, data_type, model_opt, experiment, writer, opt):
     train_loss = make_loss_compute(model, fields["tgt"].vocab, opt)
     valid_loss = make_loss_compute(model, fields["tgt"].vocab, opt)
 
@@ -226,14 +172,19 @@ def train_model(model, fields, optim, data_type, model_opt):
         print('')
 
         # 1. Train for one epoch on the training set.
-        train_iter = make_dataset_iter(lazily_load_dataset("train"),
+        train_iter = make_dataset_iter(lazily_load_dataset("train", opt),
                                        fields, opt)
-        train_stats = trainer.train(train_iter, epoch, report_func)
+
+        def report_func_(epoch, batch, num_batches, start_time, lr, report_stats):
+            return report_func(epoch, batch, num_batches,
+                        start_time, lr, report_stats, experiment, writer, opt)
+
+        train_stats = trainer.train(train_iter, epoch, report_func_)
         print('Train perplexity: %g' % train_stats.ppl())
         print('Train accuracy: %g' % train_stats.accuracy())
 
         # 2. Validate on the validation set.
-        valid_iter = make_dataset_iter(lazily_load_dataset("valid"),
+        valid_iter = make_dataset_iter(lazily_load_dataset("valid", opt),
                                        fields, opt,
                                        is_train=False)
         valid_stats = trainer.validate(valid_iter)
@@ -256,7 +207,7 @@ def train_model(model, fields, optim, data_type, model_opt):
             trainer.drop_checkpoint(model_opt, epoch, fields, valid_stats)
 
 
-def check_save_model_path():
+def check_save_model_path(opt):
     save_model_path = os.path.abspath(opt.save_model)
     model_dirname = os.path.dirname(save_model_path)
     if not os.path.exists(model_dirname):
@@ -277,7 +228,7 @@ def tally_parameters(model):
     print('decoder: ', dec)
 
 
-def lazily_load_dataset(corpus_type):
+def lazily_load_dataset(corpus_type, opt):
     """
     Dataset generator. Don't do extra stuff here, like printing,
     because they will be postponed to the first loading time.
@@ -306,7 +257,7 @@ def lazily_load_dataset(corpus_type):
         yield lazy_dataset_loader(pt, corpus_type)
 
 
-def load_fields(dataset, data_type, checkpoint):
+def load_fields(dataset, data_type, checkpoint, opt):
     if checkpoint is not None:
         print('Loading vocab from checkpoint at %s.' % opt.train_from)
         fields = onmt.io.load_fields_from_vocab(
@@ -349,7 +300,7 @@ def build_model(model_opt, opt, fields, checkpoint):
     return model
 
 
-def build_optim(model, checkpoint):
+def build_optim(model, checkpoint, opt):
     if opt.train_from:
         print('Loading optimizer from checkpoint.')
         optim = checkpoint['optim']
@@ -373,7 +324,63 @@ def build_optim(model, checkpoint):
     return optim
 
 
-def main():
+def main(args):
+    parser = argparse.ArgumentParser(
+        description='train.py',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    # opts.py
+    opts.add_md_help_argument(parser)
+    opts.model_opts(parser)
+    opts.train_opts(parser)
+
+    opt = parser.parse_args(args)
+    if opt.word_vec_size != -1:
+        opt.src_word_vec_size = opt.word_vec_size
+        opt.tgt_word_vec_size = opt.word_vec_size
+
+    if opt.layers != -1:
+        opt.enc_layers = opt.layers
+        opt.dec_layers = opt.layers
+
+    opt.brnn = (opt.encoder_type == "brnn")
+    if opt.seed > 0:
+        random.seed(opt.seed)
+        torch.manual_seed(opt.seed)
+
+    if opt.rnn_type == "SRU" and not opt.gpuid:
+        raise AssertionError("Using SRU requires -gpuid set.")
+
+    if torch.cuda.is_available() and not opt.gpuid:
+        print("WARNING: You have a CUDA device, should run with -gpuid 0")
+
+    if opt.gpuid:
+        cuda.set_device(opt.gpuid[0])
+        if opt.seed > 0:
+            torch.cuda.manual_seed(opt.seed)
+
+    if len(opt.gpuid) > 1:
+        sys.stderr.write("Sorry, multigpu isn't supported yet, coming soon!\n")
+        sys.exit(1)
+
+    # Set up the Crayon logging server.
+    experiment = None
+    if opt.exp_host != "":
+        from pycrayon import CrayonClient
+
+        cc = CrayonClient(hostname=opt.exp_host)
+
+        experiments = cc.get_experiment_names()
+        print(experiments)
+        if opt.exp in experiments:
+            cc.remove_experiment(opt.exp)
+        experiment = cc.create_experiment(opt.exp)
+
+    writer = None
+    if opt.tensorboard:
+        from tensorboardX import SummaryWriter
+        writer = SummaryWriter(opt.tensorboard_log_dir, comment="Onmt")
+
     # Load checkpoint if we resume from a previous training.
     if opt.train_from:
         print('Loading checkpoint from %s' % opt.train_from)
@@ -388,11 +395,11 @@ def main():
 
     # Peek the fisrt dataset to determine the data_type.
     # (All datasets have the same data_type).
-    first_dataset = next(lazily_load_dataset("train"))
+    first_dataset = next(lazily_load_dataset("train", opt))
     data_type = first_dataset.data_type
 
     # Load fields generated from preprocess phase.
-    fields = load_fields(first_dataset, data_type, checkpoint)
+    fields = load_fields(first_dataset, data_type, checkpoint, opt)
 
     # Report src/tgt features.
     collect_report_features(fields)
@@ -400,13 +407,13 @@ def main():
     # Build model.
     model = build_model(model_opt, opt, fields, checkpoint)
     tally_parameters(model)
-    check_save_model_path()
+    check_save_model_path(opt)
 
     # Build optimizer.
-    optim = build_optim(model, checkpoint)
+    optim = build_optim(model, checkpoint, opt)
 
     # Do training.
-    train_model(model, fields, optim, data_type, model_opt)
+    train_model(model, fields, optim, data_type, model_opt, experiment, writer, opt)
 
     # If using tensorboard for logging, close the writer after training.
     if opt.tensorboard:
@@ -414,4 +421,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

@@ -9,7 +9,7 @@ import sys
 import torch
 
 import onmt.io
-import opts
+from . import opts
 
 
 def check_existing_pt_files(opt):
@@ -24,7 +24,7 @@ def check_existing_pt_files(opt):
             sys.exit(1)
 
 
-def parse_args():
+def parse_args(args):
     parser = argparse.ArgumentParser(
         description='preprocess.py',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -32,7 +32,7 @@ def parse_args():
     opts.add_md_help_argument(parser)
     opts.preprocess_opts(parser)
 
-    opt = parser.parse_args()
+    opt = parser.parse_args(args)
     torch.manual_seed(opt.seed)
 
     check_existing_pt_files(opt)
@@ -167,8 +167,8 @@ def build_save_vocab(train_dataset, fields, opt):
     torch.save(onmt.io.save_fields_to_vocab(fields), vocab_file)
 
 
-def main():
-    opt = parse_args()
+def main(args):
+    opt = parse_args(args)
 
     print("Extracting features...")
     src_nfeats = onmt.io.get_num_features(opt.data_type, opt.train_src, 'src')
@@ -190,4 +190,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

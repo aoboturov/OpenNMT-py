@@ -14,7 +14,7 @@ import onmt.translate
 import onmt
 import onmt.ModelConstructor
 import onmt.modules
-import opts
+from . import opts
 
 parser = argparse.ArgumentParser(
     description='translate.py',
